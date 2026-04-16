@@ -476,30 +476,52 @@ class DocumentScanner {
         ctx.restore();
     }
 
-    // ── Captura ────────────────────────────────────────────────
-    _capture() {
+    // ── Captura + alinhamento automático ──────────────────────
+    async _capture() {
         const video = this.el.video;
-
         if (!video.videoWidth || !video.videoHeight) {
-            this._toast('⏳ Câmera ainda iniciando, aguarde um segundo…');
+            this._toast('⏳ Câmera ainda iniciando…');
             return;
         }
-
         try {
-            // Captura APENAS a área visível na tela (resolve "vejo X mas captura Y")
-            const rect   = this._getVideoVisibleRect();
-            const canvas = document.createElement('canvas');
-            canvas.width  = rect.w;
-            canvas.height = rect.h;
-            canvas.getContext('2d').drawImage(video, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+            // Captura só a área visível
+            const rect = this._getVideoVisibleRect();
+            const raw  = document.createElement('canvas');
+            raw.width  = rect.w;
+            raw.height = rect.h;
+            raw.getContext('2d').drawImage(video, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
 
-            this.capturedCanvas = canvas;
             this._setState('adjust');
-            this._setupEditor(canvas);
+            this._showLoader('Detectando e alinhando documento…');
+
+            const result = await this._autoAlign(raw);
+            this.capturedCanvas = result.canvas;
+            this._hideLoader();
+            this._setupAdjustView(result.canvas, result.aligned);
         } catch (err) {
-            this._toast('Erro ao capturar: ' + err.message);
+            this._hideLoader();
+            this._toast('Erro: ' + err.message);
             console.error(err);
         }
+    }
+
+    // Detecta os 4 cantos e aplica a perspectiva automaticamente
+    async _autoAlign(rawCanvas) {
+        return new Promise(resolve => {
+            setTimeout(() => {
+                try {
+                    const corners = this.edgeDetector.detect(rawCanvas);
+                    if (corners) {
+                        const warped = this.perspectiveTransformer.warp(rawCanvas, corners);
+                        resolve({ canvas: warped, aligned: true });
+                    } else {
+                        resolve({ canvas: rawCanvas, aligned: false });
+                    }
+                } catch (e) {
+                    resolve({ canvas: rawCanvas, aligned: false });
+                }
+            }, 0);
+        });
     }
 
     _loadFile(e) {
@@ -507,16 +529,20 @@ class DocumentScanner {
         if (!file) return;
 
         const reader = new FileReader();
-        reader.onload = (ev) => {
+        reader.onload = async (ev) => {
             const img = new Image();
-            img.onload = () => {
+            img.onload = async () => {
                 const c = document.createElement('canvas');
                 c.width  = img.naturalWidth;
                 c.height = img.naturalHeight;
                 c.getContext('2d').drawImage(img, 0, 0);
-                this.capturedCanvas = c;
+
                 this._setState('adjust');
-                this._setupEditor(c);
+                this._showLoader('Detectando e alinhando documento…');
+                const result = await this._autoAlign(c);
+                this.capturedCanvas = result.canvas;
+                this._hideLoader();
+                this._setupAdjustView(result.canvas, result.aligned);
             };
             img.src = ev.target.result;
         };
@@ -524,110 +550,94 @@ class DocumentScanner {
         e.target.value = '';
     }
 
-    // ── Editor de cantos ───────────────────────────────────────
-    _setupEditor(srcCanvas) {
+    // ── Exibir documento já alinhado na etapa de ajuste ───────
+    _setupAdjustView(srcCanvas, wasAligned = false) {
         const preview   = this.el.previewCanvas;
         const container = preview.parentElement;
-        // clientWidth pode ser 0 logo após mudar display; usa innerWidth como fallback
         const maxW = (container.clientWidth || window.innerWidth) - 16;
-        const maxH = window.innerHeight * 0.45;
+        const maxH = window.innerHeight * 0.50;
         const ratio = Math.min(maxW / srcCanvas.width, maxH / srcCanvas.height, 1);
 
         preview.width  = Math.round(srcCanvas.width  * ratio);
         preview.height = Math.round(srcCanvas.height * ratio);
+        preview.getContext('2d').drawImage(srcCanvas, 0, 0, preview.width, preview.height);
 
-        this.cornerEditor = new CornerEditor(preview);
-        this.cornerEditor.setImage(srcCanvas);
+        // Sem corner editor — perspectiva já foi corrigida automaticamente
+        this.cornerEditor = null;
 
-        // Detectar bordas na imagem capturada
-        const corners = this.edgeDetector.detect(srcCanvas);
-        if (corners) {
-            this.cornerEditor.setCorners(corners.map(([x, y]) => [x * ratio, y * ratio]));
-        } else {
-            // Default: levemente recuado
-            const m = 12;
-            this.cornerEditor.setCorners([
-                [m, m],
-                [preview.width - m, m],
-                [preview.width - m, preview.height - m],
-                [m, preview.height - m],
-            ]);
+        // Reset controles
+        this.settings = { filter: 'color', brightness: 0, contrast: 0, blur: 0, rotation: 0 };
+        this.el.filterBtns.forEach((b, i) => b.classList.toggle('active', i === 0));
+        this.el.sliderBrightness.value = 0;
+        this.el.sliderContrast.value   = 0;
+        this.el.sliderBlur.value       = 0;
+        this.el.valueBrightness.textContent = '+0';
+        this.el.valueContrast.textContent   = '+0';
+        this.el.valueBlur.textContent       = '+0';
+
+        preview.style.filter    = 'none';
+        preview.style.transform = '';
+
+        // Status
+        const statusEl = document.getElementById('align-status');
+        if (statusEl) {
+            statusEl.textContent = wasAligned
+                ? '✓ Documento detectado e alinhado automaticamente'
+                : '⚠ Documento não detectado — verifique o enquadramento';
+            statusEl.style.color = wasAligned ? 'var(--accent)' : 'var(--warn)';
         }
     }
 
-    // ── Preview em tempo real dos filtros/ajustes ─────────────
+    // ── Preview em tempo real — CSS filter, GPU instantâneo ───
     _updatePreview() {
-        // Re-renderiza os cantos (sem filtro no canvas ctx)
-        this.cornerEditor?.render();
-
         const canvas = this.el.previewCanvas;
-        if (!canvas) return;
+        if (!canvas || !this.capturedCanvas) return;
 
         const { filter, brightness, contrast, blur, rotation } = this.settings;
         const parts = [];
 
-        // Filtro de cor
         if (filter === 'gray') parts.push('grayscale(1)');
         if (filter === 'bw')   parts.push('grayscale(1) contrast(20)');
-
-        // Brilho: slider -100..+100 → CSS brightness 0..2
+        // brightness: slider -100..+100 → CSS 0.0..2.0  (0 = sem efeito = 1.0)
         if (brightness !== 0) parts.push(`brightness(${((brightness + 100) / 100).toFixed(2)})`);
+        // contrast:   slider -100..+100 → CSS 0.0..2.0
+        if (contrast !== 0)   parts.push(`contrast(${((contrast + 100) / 100).toFixed(2)})`);
+        if (blur > 0)         parts.push(`blur(${(blur * 0.5).toFixed(1)}px)`);
 
-        // Contraste: slider -100..+100 → CSS contrast 0..2
-        if (contrast !== 0) parts.push(`contrast(${((contrast + 100) / 100).toFixed(2)})`);
+        canvas.style.filter    = parts.join(' ') || 'none';
+        canvas.style.transform = rotation ? `rotate(${rotation}deg)` : '';
 
-        // Suavização
-        if (blur > 0) parts.push(`blur(${(blur * 0.4).toFixed(1)}px)`);
-
-        // Aplica no elemento CSS — GPU-accelerated, instantâneo
-        canvas.style.filter = parts.length ? parts.join(' ') : 'none';
-
-        // Badge de rotação
         const badge = document.getElementById('rotation-badge');
         if (badge) {
-            if (rotation !== 0) {
-                badge.textContent = `↻ ${rotation}°`;
-                badge.style.display = 'block';
-            } else {
-                badge.style.display = 'none';
-            }
+            badge.textContent   = rotation ? `↻ ${rotation}°` : '';
+            badge.style.display = rotation ? 'block' : 'none';
         }
     }
 
-    // ── Processar documento ────────────────────────────────────
+    // ── Confirmar: aplica filtros/ajustes ao documento já alinhado
     async _processDocument() {
-        if (!this.capturedCanvas || !this.cornerEditor) return;
+        if (!this.capturedCanvas) return;
 
-        this._showLoader('Processando documento...');
+        this._showLoader('Aplicando ajustes…');
 
         try {
-            // Cantos no canvas de preview → escalar para imagem original
-            const dispCorners = this.cornerEditor.getCorners();
-            const scX = this.capturedCanvas.width  / this.cornerEditor.canvas.width;
-            const scY = this.capturedCanvas.height / this.cornerEditor.canvas.height;
-            const srcCorners = dispCorners.map(([x, y]) => [x * scX, y * scY]);
-
-            // Correção de perspectiva (em worker-like promise para não travar UI)
-            const warped = await new Promise(resolve => {
-                setTimeout(() => {
-                    resolve(this.perspectiveTransformer.warp(this.capturedCanvas, srcCorners));
-                }, 0);
-            });
-
-            // Filtros e ajustes
             const filtered = await new Promise(resolve => {
                 setTimeout(() => {
-                    resolve(this.imageFilters.apply(warped, this.settings));
+                    resolve(this.imageFilters.apply(this.capturedCanvas, this.settings));
                 }, 0);
             });
 
             this.processedCanvas = filtered;
+
+            // Limpar preview antes de trocar de tela
+            this.el.previewCanvas.style.filter    = 'none';
+            this.el.previewCanvas.style.transform = '';
+
             this._setState('result');
             this._renderResult(filtered);
-
         } catch (err) {
             console.error(err);
-            this._toast('Erro ao processar: ' + err.message);
+            this._toast('Erro: ' + err.message);
         } finally {
             this._hideLoader();
         }
@@ -752,7 +762,8 @@ class DocumentScanner {
         this.processedCanvas = null;
         this.cornerEditor    = null;
         this.settings        = { filter:'color', brightness:0, contrast:0, blur:0, rotation:0 };
-        this.el.previewCanvas.style.filter = 'none';
+        this.el.previewCanvas.style.filter    = 'none';
+        this.el.previewCanvas.style.transform = '';
 
         // Reset UI
         this.el.filterBtns.forEach((b, i) => b.classList.toggle('active', i === 0));

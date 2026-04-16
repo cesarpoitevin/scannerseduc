@@ -96,14 +96,14 @@
 
     <div class="adjust-wrap">
 
-      <!-- Preview com handles de canto -->
-      <div class="preview-box" style="position:relative">
+      <!-- Preview do documento alinhado -->
+      <div class="preview-box" style="position:relative; overflow:hidden">
         <canvas id="preview-canvas"></canvas>
-        <div class="rotation-badge" id="rotation-badge">↻ 0°</div>
+        <div class="rotation-badge" id="rotation-badge"></div>
       </div>
 
-      <div style="padding:8px 14px 0;font-size:0.75rem;color:var(--text-muted);text-align:center">
-        Arraste os pontos verdes para ajustar os cantos do documento
+      <div id="align-status" style="padding:6px 14px 0;font-size:0.78rem;text-align:center;color:var(--accent)">
+        Analisando documento…
       </div>
 
       <!-- Painel de controles -->
