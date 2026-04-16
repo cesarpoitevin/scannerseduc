@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#0B0F1A">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -97,8 +97,9 @@
     <div class="adjust-wrap">
 
       <!-- Preview com handles de canto -->
-      <div class="preview-box">
+      <div class="preview-box" style="position:relative">
         <canvas id="preview-canvas"></canvas>
+        <div class="rotation-badge" id="rotation-badge">↻ 0°</div>
       </div>
 
       <div style="padding:8px 14px 0;font-size:0.75rem;color:var(--text-muted);text-align:center">

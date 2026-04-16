@@ -140,6 +140,20 @@ body {
   pointer-events: none;
 }
 
+/* Indicador de rotação sobre o preview */
+.rotation-badge {
+  position: absolute;
+  top: 8px; right: 8px;
+  background: rgba(0,0,0,.65);
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 20px;
+  pointer-events: none;
+  display: none;
+}
+
 /* Grid de enquadramento */
 .camera-grid {
   position: absolute;
@@ -187,9 +201,12 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 16px 24px;
+  /* Empurra o conteúdo acima da barra de navegação do celular */
+  padding-bottom: max(20px, env(safe-area-inset-bottom, 20px));
   background: var(--surface);
   border-top: 1px solid var(--border);
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .btn-icon {
@@ -394,8 +411,10 @@ body {
   display: flex;
   gap: 10px;
   padding: 12px 16px;
+  padding-bottom: max(16px, env(safe-area-inset-bottom, 16px));
   background: var(--surface);
   border-top: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
 /* ─────────────────────────────────────────────────────────

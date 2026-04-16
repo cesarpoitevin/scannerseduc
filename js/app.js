@@ -312,17 +312,17 @@ class DocumentScanner {
                 el.filterBtns.forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 this.settings.filter = btn.dataset.filter;
-                this.cornerEditor?.render(this.settings);
+                this._updatePreview();
             });
         });
 
         // Sliders
-        const bindSlider = (slider, valEl, key, scale = 1) => {
+        const bindSlider = (slider, valEl, key) => {
             slider.addEventListener('input', () => {
                 const v = parseInt(slider.value);
                 this.settings[key] = v;
-                if (valEl) valEl.textContent = (v >= 0 ? '+' : '') + Math.round(v * scale);
-                this.cornerEditor?.render(this.settings);
+                if (valEl) valEl.textContent = (v >= 0 ? '+' : '') + v;
+                this._updatePreview();
             });
         };
         bindSlider(el.sliderBrightness, el.valueBrightness, 'brightness');
@@ -332,11 +332,11 @@ class DocumentScanner {
         // Rotação
         el.btnRotateLeft.addEventListener('click',  () => {
             this.settings.rotation = (this.settings.rotation - 90 + 360) % 360;
-            this.cornerEditor?.render(this.settings);
+            this._updatePreview();
         });
         el.btnRotateRight.addEventListener('click', () => {
             this.settings.rotation = (this.settings.rotation + 90) % 360;
-            this.cornerEditor?.render(this.settings);
+            this._updatePreview();
         });
 
         // Resultado
@@ -368,11 +368,41 @@ class DocumentScanner {
         }
     }
 
+    // ── Calcula a área visível do vídeo (object-fit: cover recorta o frame) ──
+    _getVideoVisibleRect() {
+        const video = this.el.video;
+        const vW = video.videoWidth;
+        const vH = video.videoHeight;
+        const wrap = video.parentElement;
+        const dW = wrap.clientWidth  || video.clientWidth;
+        const dH = wrap.clientHeight || video.clientHeight;
+
+        if (!vW || !vH || !dW || !dH) return { x: 0, y: 0, w: vW || 1, h: vH || 1 };
+
+        const vAsp = vW / vH;
+        const dAsp = dW / dH;
+
+        let srcX, srcY, srcW, srcH;
+        if (vAsp <= dAsp) {
+            // Vídeo mais estreito → cover escala pela largura, recorta altura
+            srcW = vW;
+            srcH = vW / dAsp;
+            srcX = 0;
+            srcY = (vH - srcH) / 2;
+        } else {
+            // Vídeo mais largo → cover escala pela altura, recorta largura
+            srcH = vH;
+            srcW = vH * dAsp;
+            srcX = (vW - srcW) / 2;
+            srcY = 0;
+        }
+        return { x: Math.round(srcX), y: Math.round(srcY), w: Math.round(srcW), h: Math.round(srcH) };
+    }
+
     // ── Loop de detecção de bordas no preview da câmera ────────
     _startOverlayLoop() {
-        let lastCorners   = null;
-        let lastDetect    = 0;
-        const DETECT_MS   = 600; // detectar a cada 600ms
+        let lastCorners = null;
+        let lastDetect  = 0;
 
         const loop = () => {
             this._rafId = requestAnimationFrame(loop);
@@ -381,29 +411,33 @@ class DocumentScanner {
             const video = this.el.video;
             const ov    = this.el.overlayCanvas;
 
-            // Sincronizar tamanho do overlay com o vídeo em tempo real
-            if (video.videoWidth > 0 && (ov.width !== video.videoWidth || ov.height !== video.videoHeight)) {
-                ov.width  = video.videoWidth;
-                ov.height = video.videoHeight;
+            if (!video.videoWidth) return;
+
+            // Sincronizar canvas de overlay com a área VISÍVEL do vídeo
+            const rect = this._getVideoVisibleRect();
+            if (ov.width !== rect.w || ov.height !== rect.h) {
+                ov.width  = rect.w;
+                ov.height = rect.h;
             }
 
             if (!this.camera?.isReady()) return;
 
             const now = Date.now();
-            if (now - lastDetect > DETECT_MS) {
+            if (now - lastDetect > 600) {
                 lastDetect = now;
                 const frame = this.camera.getFrame();
                 if (frame) {
-                    const corners = this.edgeDetector.detect(frame);
-                    // Corners já estão em coordenadas do frame; overlay tem o mesmo tamanho
-                    if (corners) lastCorners = corners;
-                    else lastCorners = null;
+                    // Detectar apenas na área visível (a que será capturada)
+                    const vis = document.createElement('canvas');
+                    vis.width  = rect.w;
+                    vis.height = rect.h;
+                    vis.getContext('2d').drawImage(frame, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+                    const corners = this.edgeDetector.detect(vis);
+                    lastCorners = corners || null;
                 }
             }
 
-            this.edgeDetector.drawOverlay(this.el.overlayCanvas, lastCorners, 1, 1);
-
-            // Dica de status no overlay
+            this.edgeDetector.drawOverlay(ov, lastCorners, 1, 1);
             this._drawCameraHint(ov, lastCorners);
         };
 
@@ -446,17 +480,19 @@ class DocumentScanner {
     _capture() {
         const video = this.el.video;
 
-        // Captura diretamente do elemento <video> — não depende de isReady()
         if (!video.videoWidth || !video.videoHeight) {
             this._toast('⏳ Câmera ainda iniciando, aguarde um segundo…');
             return;
         }
 
         try {
+            // Captura APENAS a área visível na tela (resolve "vejo X mas captura Y")
+            const rect   = this._getVideoVisibleRect();
             const canvas = document.createElement('canvas');
-            canvas.width  = video.videoWidth;
-            canvas.height = video.videoHeight;
-            canvas.getContext('2d').drawImage(video, 0, 0);
+            canvas.width  = rect.w;
+            canvas.height = rect.h;
+            canvas.getContext('2d').drawImage(video, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+
             this.capturedCanvas = canvas;
             this._setState('adjust');
             this._setupEditor(canvas);
@@ -516,6 +552,45 @@ class DocumentScanner {
                 [preview.width - m, preview.height - m],
                 [m, preview.height - m],
             ]);
+        }
+    }
+
+    // ── Preview em tempo real dos filtros/ajustes ─────────────
+    _updatePreview() {
+        // Re-renderiza os cantos (sem filtro no canvas ctx)
+        this.cornerEditor?.render();
+
+        const canvas = this.el.previewCanvas;
+        if (!canvas) return;
+
+        const { filter, brightness, contrast, blur, rotation } = this.settings;
+        const parts = [];
+
+        // Filtro de cor
+        if (filter === 'gray') parts.push('grayscale(1)');
+        if (filter === 'bw')   parts.push('grayscale(1) contrast(20)');
+
+        // Brilho: slider -100..+100 → CSS brightness 0..2
+        if (brightness !== 0) parts.push(`brightness(${((brightness + 100) / 100).toFixed(2)})`);
+
+        // Contraste: slider -100..+100 → CSS contrast 0..2
+        if (contrast !== 0) parts.push(`contrast(${((contrast + 100) / 100).toFixed(2)})`);
+
+        // Suavização
+        if (blur > 0) parts.push(`blur(${(blur * 0.4).toFixed(1)}px)`);
+
+        // Aplica no elemento CSS — GPU-accelerated, instantâneo
+        canvas.style.filter = parts.length ? parts.join(' ') : 'none';
+
+        // Badge de rotação
+        const badge = document.getElementById('rotation-badge');
+        if (badge) {
+            if (rotation !== 0) {
+                badge.textContent = `↻ ${rotation}°`;
+                badge.style.display = 'block';
+            } else {
+                badge.style.display = 'none';
+            }
         }
     }
 
@@ -677,6 +752,7 @@ class DocumentScanner {
         this.processedCanvas = null;
         this.cornerEditor    = null;
         this.settings        = { filter:'color', brightness:0, contrast:0, blur:0, rotation:0 };
+        this.el.previewCanvas.style.filter = 'none';
 
         // Reset UI
         this.el.filterBtns.forEach((b, i) => b.classList.toggle('active', i === 0));
