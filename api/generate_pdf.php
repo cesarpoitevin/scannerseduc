@@ -3,7 +3,12 @@
 //  Geração de PDF puro (sem biblioteca externa) – api/generate_pdf.php
 // ============================================================
 
-require_once dirname(__DIR__) . '/config.php';
+// Tenta fora do public_html primeiro (produção), depois na raiz (desenvolvimento)
+$configPath = dirname(dirname(__DIR__)) . '/config.php';
+if (!file_exists($configPath)) {
+    $configPath = dirname(__DIR__) . '/config.php';
+}
+require_once $configPath;
 
 // Verificar método
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {

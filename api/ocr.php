@@ -3,7 +3,12 @@
 //  OCR via Gemini – api/ocr.php
 // ============================================================
 
-require_once dirname(__DIR__) . '/config.php';
+// Tenta fora do public_html primeiro (produção), depois na raiz (desenvolvimento)
+$configPath = dirname(dirname(__DIR__)) . '/config.php';
+if (!file_exists($configPath)) {
+    $configPath = dirname(__DIR__) . '/config.php';
+}
+require_once $configPath;
 
 header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
