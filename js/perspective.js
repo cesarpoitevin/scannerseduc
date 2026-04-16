@@ -10,37 +10,59 @@ class PerspectiveTransformer {
      * @param {number[][]} corners – [TL, TR, BR, BL] em coordenadas do srcCanvas
      * @returns {HTMLCanvasElement}
      */
+    /**
+     * Limite de pixels para o loop pixel-a-pixel.
+     * 800×600 = 480 000 px ≈ < 1s em mobile.
+     * O resultado ainda tem qualidade excelente para PDF.
+     */
+    static MAX_PIXELS = 480_000;
+
     warp(srcCanvas, corners) {
         const [tl, tr, br, bl] = corners;
 
-        // Calcular dimensões de saída (média dos lados opostos)
+        // Dimensões naturais de saída (baseadas nos lados do quad)
         const wTop    = Math.hypot(tr[0]-tl[0], tr[1]-tl[1]);
         const wBottom = Math.hypot(br[0]-bl[0], br[1]-bl[1]);
         const hLeft   = Math.hypot(bl[0]-tl[0], bl[1]-tl[1]);
         const hRight  = Math.hypot(br[0]-tr[0], br[1]-tr[1]);
 
-        const outW = Math.round(Math.max(wTop, wBottom));
-        const outH = Math.round(Math.max(hLeft, hRight));
+        const rawW = Math.round(Math.max(wTop, wBottom));
+        const rawH = Math.round(Math.max(hLeft, hRight));
+
+        // ── Limitar resolução para não travar em mobile ──────────
+        const pxScale = Math.min(1, Math.sqrt(PerspectiveTransformer.MAX_PIXELS / (rawW * rawH)));
+        const outW = Math.max(1, Math.round(rawW * pxScale));
+        const outH = Math.max(1, Math.round(rawH * pxScale));
+
+        // Escalar source canvas e corners pelo mesmo fator
+        let src = srcCanvas;
+        let sc  = corners;
+        if (pxScale < 0.999) {
+            src = document.createElement('canvas');
+            src.width  = Math.round(srcCanvas.width  * pxScale);
+            src.height = Math.round(srcCanvas.height * pxScale);
+            src.getContext('2d').drawImage(srcCanvas, 0, 0, src.width, src.height);
+            sc = corners.map(([x, y]) => [x * pxScale, y * pxScale]);
+        }
 
         // Pontos de destino (retângulo perfeito)
         const dst = [[0, 0], [outW-1, 0], [outW-1, outH-1], [0, outH-1]];
 
-        // Homografia inversa: dst → src (para mapeamento inverso)
-        const H = this._computeHomography(dst, corners);
+        // Homografia inversa: dst → src (mapeamento inverso)
+        const H = this._computeHomography(dst, sc);
 
         // Criar canvas de saída
         const dstCanvas = document.createElement('canvas');
         dstCanvas.width  = outW;
         dstCanvas.height = outH;
 
-        const srcCtx = srcCanvas.getContext('2d');
-        const srcData = srcCtx.getImageData(0, 0, srcCanvas.width, srcCanvas.height);
-
+        const srcCtx  = src.getContext('2d');
+        const srcData = srcCtx.getImageData(0, 0, src.width, src.height);
         const dstCtx  = dstCanvas.getContext('2d');
         const dstData = dstCtx.createImageData(outW, outH);
 
-        const sw = srcCanvas.width;
-        const sh = srcCanvas.height;
+        const sw = src.width;
+        const sh = src.height;
 
         for (let dy = 0; dy < outH; dy++) {
             for (let dx = 0; dx < outW; dx++) {

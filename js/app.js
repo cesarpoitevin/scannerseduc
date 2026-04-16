@@ -296,7 +296,9 @@ class DocumentScanner {
     _bindEvents() {
         const el = this.el;
 
-        el.btnCapture.addEventListener('click', () => this._capture());
+        // touchstart para resposta imediata no mobile (sem delay de 300ms)
+        el.btnCapture.addEventListener('touchstart', (e) => { e.preventDefault(); this._capture(); }, { passive: false });
+        el.btnCapture.addEventListener('click', () => this._capture()); // fallback desktop
         el.btnFlip.addEventListener('click',    () => this._flipCamera());
         el.btnUpload.addEventListener('click',  () => el.fileInput.click());
         el.fileInput.addEventListener('change', (e) => this._loadFile(e));
@@ -411,17 +413,30 @@ class DocumentScanner {
     // Dica textual dentro do viewfinder
     _drawCameraHint(canvas, corners) {
         const ctx = canvas.getContext('2d');
-        const msg = corners ? '✓  Documento detectado' : 'Posicione o documento';
-        const color = corners ? '#00E678' : 'rgba(255,255,255,0.75)';
+        const msg   = corners ? '\u2713  Documento detectado — toque para capturar' : 'Enquadre o documento';
+        const color = corners ? '#00E678' : 'rgba(255,255,255,0.9)';
+
+        // Fonte proporcional ao canvas nativo (câmera 1280px → fonte ~38px → visível em display menor)
+        const fontSize = Math.round(canvas.height * 0.05);
+        const padV = Math.round(fontSize * 0.55);
+        const padH = Math.round(fontSize * 0.8);
+        const by   = canvas.height - Math.round(canvas.height * 0.05) - padV;
 
         ctx.save();
-        ctx.font = `bold ${Math.round(canvas.height * 0.028)}px sans-serif`;
+        ctx.font = `bold ${fontSize}px sans-serif`;
         ctx.textAlign = 'center';
-        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+
         const tw = ctx.measureText(msg).width;
-        const bx = canvas.width / 2 - tw / 2 - 10;
-        const by = canvas.height - Math.round(canvas.height * 0.07);
-        ctx.fillRect(bx, by - 18, tw + 20, 26);
+        const bx = (canvas.width - tw) / 2 - padH;
+        const bw = tw + padH * 2;
+        const bh = fontSize + padV * 2;
+
+        // Fundo arredondado
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.beginPath();
+        ctx.roundRect(bx, by - fontSize - padV + 4, bw, bh, fontSize * 0.4);
+        ctx.fill();
+
         ctx.fillStyle = color;
         ctx.fillText(msg, canvas.width / 2, by);
         ctx.restore();
@@ -640,11 +655,21 @@ class DocumentScanner {
         stepAdjust.style.display  = state === 'adjust'  ? '' : 'none';
         stepResult.style.display  = state === 'result'  ? '' : 'none';
 
-        if (state === 'capture') {
-            this.camera?.start().catch(() => {});
-        } else {
+        if (state === 'result') {
+            // Só para a câmera quando chega no resultado final
             this.camera?.stop().catch(() => {});
+        } else if (state === 'capture') {
+            // Reinicia câmera apenas se parou (ex: vindo do resultado)
+            if (!this.camera?.isReady()) {
+                this.camera?.start()
+                    .then(() => { this.el.cameraError.style.display = 'none'; })
+                    .catch(err => {
+                        console.error('Câmera:', err);
+                        this.el.cameraError.style.display = 'flex';
+                    });
+            }
         }
+        // Em 'adjust': câmera continua rodando em background — volta instantânea
     }
 
     _reset() {
