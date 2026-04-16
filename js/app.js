@@ -12,22 +12,32 @@ class CameraManager {
 
     async start() {
         await this.stop();
-        try {
-            this.stream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    facingMode: { ideal: this.facingMode },
-                    width:  { ideal: 1920 },
-                    height: { ideal: 1080 },
-                },
-                audio: false,
-            });
-            this.video.srcObject = this.stream;
-            await this.video.play();
-            this._running = true;
-        } catch (err) {
-            this._running = false;
-            throw err;
+
+        // Tenta constrains progressivamente mais permissivos
+        const tries = [
+            { video: { facingMode: { ideal: this.facingMode }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+            { video: { facingMode: { ideal: this.facingMode } } },
+            { video: true },
+        ];
+
+        let lastErr;
+        for (const c of tries) {
+            try {
+                this.stream = await navigator.mediaDevices.getUserMedia({ ...c, audio: false });
+                break;
+            } catch (e) { lastErr = e; }
         }
+        if (!this.stream) throw lastErr;
+
+        this.video.srcObject = this.stream;
+
+        // Aguarda o vídeo realmente ter frames (evento canplay)
+        await new Promise((resolve) => {
+            if (this.video.readyState >= 3) { this._running = true; resolve(); return; }
+            const onReady = () => { this._running = true; this.video.removeEventListener('canplay', onReady); resolve(); };
+            this.video.addEventListener('canplay', onReady);
+            this.video.play().catch(() => {}); // play() pode falhar em alguns browsers sem interação
+        });
     }
 
     async stop() {
@@ -45,7 +55,8 @@ class CameraManager {
     }
 
     isReady() {
-        return this._running && this.video.readyState >= 2;
+        // videoWidth > 0 é mais confiável que readyState em mobile
+        return this._running && this.video.videoWidth > 0;
     }
 
     /** Captura o frame atual como canvas */
@@ -357,43 +368,87 @@ class DocumentScanner {
 
     // ── Loop de detecção de bordas no preview da câmera ────────
     _startOverlayLoop() {
-        let lastCorners = null;
-        let tick = 0;
+        let lastCorners   = null;
+        let lastDetect    = 0;
+        const DETECT_MS   = 600; // detectar a cada 600ms
 
         const loop = () => {
             this._rafId = requestAnimationFrame(loop);
-            if (this.state !== 'capture' || !this.camera?.isReady()) return;
+            if (this.state !== 'capture') return;
 
-            tick++;
-            // Detectar a cada ~500ms (30fps → ~15 frames)
-            if (tick % 15 === 0) {
+            const video = this.el.video;
+            const ov    = this.el.overlayCanvas;
+
+            // Sincronizar tamanho do overlay com o vídeo em tempo real
+            if (video.videoWidth > 0 && (ov.width !== video.videoWidth || ov.height !== video.videoHeight)) {
+                ov.width  = video.videoWidth;
+                ov.height = video.videoHeight;
+            }
+
+            if (!this.camera?.isReady()) return;
+
+            const now = Date.now();
+            if (now - lastDetect > DETECT_MS) {
+                lastDetect = now;
                 const frame = this.camera.getFrame();
                 if (frame) {
                     const corners = this.edgeDetector.detect(frame);
-                    if (corners) {
-                        // Escalar para o canvas de overlay
-                        const ov   = this.el.overlayCanvas;
-                        const scX  = ov.width  / frame.width;
-                        const scY  = ov.height / frame.height;
-                        lastCorners = corners.map(([x,y]) => [x * scX, y * scY]);
-                    }
+                    // Corners já estão em coordenadas do frame; overlay tem o mesmo tamanho
+                    if (corners) lastCorners = corners;
+                    else lastCorners = null;
                 }
             }
 
-            // Desenhar overlay sempre
             this.edgeDetector.drawOverlay(this.el.overlayCanvas, lastCorners, 1, 1);
+
+            // Dica de status no overlay
+            this._drawCameraHint(ov, lastCorners);
         };
 
         loop();
     }
 
+    // Dica textual dentro do viewfinder
+    _drawCameraHint(canvas, corners) {
+        const ctx = canvas.getContext('2d');
+        const msg = corners ? '✓  Documento detectado' : 'Posicione o documento';
+        const color = corners ? '#00E678' : 'rgba(255,255,255,0.75)';
+
+        ctx.save();
+        ctx.font = `bold ${Math.round(canvas.height * 0.028)}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+        const tw = ctx.measureText(msg).width;
+        const bx = canvas.width / 2 - tw / 2 - 10;
+        const by = canvas.height - Math.round(canvas.height * 0.07);
+        ctx.fillRect(bx, by - 18, tw + 20, 26);
+        ctx.fillStyle = color;
+        ctx.fillText(msg, canvas.width / 2, by);
+        ctx.restore();
+    }
+
     // ── Captura ────────────────────────────────────────────────
     _capture() {
-        const frame = this.camera?.getFrame();
-        if (!frame) { this._toast('Câmera não disponível'); return; }
-        this.capturedCanvas = frame;
-        this._setState('adjust');
-        this._setupEditor(frame);
+        const video = this.el.video;
+
+        // Captura diretamente do elemento <video> — não depende de isReady()
+        if (!video.videoWidth || !video.videoHeight) {
+            this._toast('⏳ Câmera ainda iniciando, aguarde um segundo…');
+            return;
+        }
+
+        try {
+            const canvas = document.createElement('canvas');
+            canvas.width  = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            this.capturedCanvas = canvas;
+            this._setState('adjust');
+            this._setupEditor(canvas);
+        } catch (err) {
+            this._toast('Erro ao capturar: ' + err.message);
+            console.error(err);
+        }
     }
 
     _loadFile(e) {
@@ -420,9 +475,10 @@ class DocumentScanner {
 
     // ── Editor de cantos ───────────────────────────────────────
     _setupEditor(srcCanvas) {
-        const preview  = this.el.previewCanvas;
+        const preview   = this.el.previewCanvas;
         const container = preview.parentElement;
-        const maxW = container.clientWidth  - 0;
+        // clientWidth pode ser 0 logo após mudar display; usa innerWidth como fallback
+        const maxW = (container.clientWidth || window.innerWidth) - 16;
         const maxH = window.innerHeight * 0.45;
         const ratio = Math.min(maxW / srcCanvas.width, maxH / srcCanvas.height, 1);
 
