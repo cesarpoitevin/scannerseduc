@@ -1,0 +1,20 @@
+# Configuração local com chave API (NUNCA commitar)
+config.php
+
+# Claude Code (arquivos internos do editor)
+.claude/
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Uploads temporários (se adicionar no futuro)
+uploads/
+temp/
